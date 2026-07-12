@@ -268,7 +268,7 @@ git commit -m "feat: report macOS performance findings"
 - Modify: `diagnose-macos-performance/agents/openai.yaml`
 - Modify: `docs/superpowers/plans/2026-07-12-diagnose-macos-performance.md`
 
-- [ ] **Step 1: Replace generated skill placeholders**
+- [x] **Step 1: Replace generated skill placeholders**
 
 Use frontmatter:
 
@@ -281,15 +281,15 @@ description: Use when a macOS computer feels slow, laggy, frozen, unusually hot,
 
 Keep the body concise and imperative. Require the collector first, optional `--include-shell` only for Terminal symptoms, sustained evidence before diagnosis, one hypothesis at a time, targeted `lsof`/`sample`/`codesign --verify` follow-up, fact/inference labels, and explicit no-sudo/no-kill/no-cache-purge/no-security-disable gates.
 
-- [ ] **Step 2: Verify `agents/openai.yaml`**
+- [x] **Step 2: Verify `agents/openai.yaml`**
 
 It must contain exactly quoted `interface.display_name`, a 25–64-character `short_description`, and a one-sentence `default_prompt` explicitly naming `$diagnose-macos-performance`. Do not add icons, colors, dependencies, or policy fields.
 
-- [ ] **Step 3: Re-run the original scenario with the skill**
+- [x] **Step 3: Re-run the original scenario with the skill**
 
 Dispatch a fresh agent with only the scenario from Task 1 plus `Use $diagnose-macos-performance at /Users/bytedance/Codes/extend/normal-skills/diagnose-macos-performance`. Verify it now asks for or collects sustained CPU/memory/disk evidence, separates global and zsh startup, attributes I/O by process, states privacy/authorization boundaries, and delays remediation until root-cause evidence.
 
-- [ ] **Step 4: Close observed loopholes and re-test**
+- [x] **Step 4: Close observed loopholes and re-test**
 
 If the agent still proposes killing processes, uses one-shot metrics, leaks full arguments, treats cumulative counters as current rates, or overclaims security-daemon causality, add the minimum explicit counter to `SKILL.md` and run the same scenario again.
 
