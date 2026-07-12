@@ -293,7 +293,7 @@ Dispatch a fresh agent with only the scenario from Task 1 plus `Use $diagnose-ma
 
 If the agent still proposes killing processes, uses one-shot metrics, leaks full arguments, treats cumulative counters as current rates, or overclaims security-daemon causality, add the minimum explicit counter to `SKILL.md` and run the same scenario again.
 
-- [ ] **Step 5: Run final verification**
+- [x] **Step 5: Run final verification**
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s diagnose-macos-performance/tests -p 'test_*.py' -v
@@ -305,7 +305,7 @@ git status --short
 
 Expected: all tests PASS, CLI help exits `0`, validator reports the skill valid, diff check is silent, and status contains only intended skill/plan changes.
 
-- [ ] **Step 6: Commit the finished skill**
+- [x] **Step 6: Commit the finished skill**
 
 ```bash
 git add diagnose-macos-performance docs/superpowers/plans/2026-07-12-diagnose-macos-performance.md

@@ -385,6 +385,42 @@ def run_command(args: list[str], timeout: float) -> CommandResult:
     )
 
 
+def run_suppressed_command(args: list[str], timeout: float) -> CommandResult:
+    """Run a probe without retaining any child output in memory."""
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(tuple(args), 124, "", "", time.monotonic() - started, "timeout")
+    except FileNotFoundError:
+        return CommandResult(tuple(args), 127, "", "", time.monotonic() - started, "not found")
+    except OSError as exc:
+        return CommandResult(
+            tuple(args),
+            126,
+            "",
+            "",
+            time.monotonic() - started,
+            type(exc).__name__,
+        )
+    error = None if completed.returncode == 0 else f"exit {completed.returncode}"
+    return CommandResult(
+        tuple(args),
+        completed.returncode,
+        "",
+        "",
+        time.monotonic() - started,
+        error,
+    )
+
+
 def _safe_runner(
     runner: Callable[[list[str], float], CommandResult],
     args: list[str],
@@ -625,17 +661,21 @@ def measure_rates(
         for result in (vm_before_result, vm_after_result)
         if (limitation := _limitation_for(result)) is not None
     ]
+    vm_before = parse_vm_stat(vm_before_result.stdout)
+    vm_after = parse_vm_stat(vm_after_result.stdout)
+    required_vm_fields = {"page_size_bytes", "swapins", "swapouts"}
+    vm_snapshots_valid = required_vm_fields.issubset(vm_before) and required_vm_fields.issubset(
+        vm_after
+    )
+    if not limitations and not vm_snapshots_valid:
+        limitations.append("vm_stat: counter snapshots could not be parsed")
     if process_result is not None:
         if (limitation := _limitation_for(process_result)) is not None:
             limitations.append(limitation)
         elif not refreshed_processes:
             limitations.append("ps: refreshed process identities could not be parsed")
     return {
-        "vm_rates": _vm_rates(
-            parse_vm_stat(vm_before_result.stdout),
-            parse_vm_stat(vm_after_result.stdout),
-            vm_elapsed,
-        ),
+        "vm_rates": _vm_rates(vm_before, vm_after, vm_elapsed) if vm_snapshots_valid else {},
         "process_io": build_process_io_rates(before_processes, after_processes, seconds=io_elapsed),
         "io_attribution": {
             "accessible_processes": min(
@@ -655,7 +695,7 @@ def measure_rates(
 
 def measure_shell_startup(
     *,
-    runner: Callable[[list[str], float], CommandResult] = run_command,
+    runner: Callable[[list[str], float], CommandResult] = run_suppressed_command,
 ) -> dict[str, object]:
     clean = _safe_runner(runner, ["/bin/zsh", "-dflic", "exit"], 5)
     trials = [_safe_runner(runner, ["/bin/zsh", "-lic", "exit"], 5) for _ in range(5)]
@@ -701,6 +741,7 @@ def collect_report(
     runner: Callable[[list[str], float], CommandResult] = run_command,
     platform_name: str | None = None,
     rate_sampler: Callable[[int, list[dict[str, object]], Callable[[list[str], float], CommandResult]], dict[str, object]] = measure_rates,
+    shell_runner: Callable[[list[str], float], CommandResult] | None = None,
     home: str | None = None,
 ) -> dict[str, object]:
     system_name = platform_name or platform.system()
@@ -764,12 +805,12 @@ def collect_report(
     swap = parse_swapusage(static_results["swap"].stdout)
     pressure_free_pct = parse_memory_pressure(static_results["memory_pressure"].stdout)
     memory: dict[str, object] = {
-        "physical_bytes": int(hardware.get("physical_memory_bytes", 0)),
+        "physical_bytes": hardware.get("physical_memory_bytes"),
         **physmem,
         "memory_pressure_free_pct": pressure_free_pct,
-        "swap_total_bytes": swap.get("total_bytes", 0),
-        "swap_used_bytes": swap.get("used_bytes", 0),
-        "swap_free_bytes": swap.get("free_bytes", 0),
+        "swap_total_bytes": swap.get("total_bytes"),
+        "swap_used_bytes": swap.get("used_bytes"),
+        "swap_free_bytes": swap.get("free_bytes"),
         **dict(rate_data.get("vm_rates", {})),
     }
 
@@ -830,6 +871,7 @@ def collect_report(
     uptime_value = parse_uptime(static_results["uptime"].stdout)
     thermal_status = parse_thermal(static_results["thermal"].stdout)
     power_status = parse_power(static_results["power"].stdout)
+    os_version = _parse_sw_vers(static_results["sw_vers"].stdout)
     if not load:
         limitations.append("top/uptime: load averages could not be parsed")
     if int(cpu.get("sample_count") or 0) == 0:
@@ -858,15 +900,20 @@ def collect_report(
         limitations.append("thermal: status could not be parsed")
     if uptime_value is None:
         limitations.append("uptime: duration could not be parsed")
+    if "product_version" not in os_version or "build_version" not in os_version:
+        limitations.append("sw_vers: OS version/build could not be parsed")
+    if power_status.get("source") is None and power_status.get("battery_pct") is None:
+        limitations.append("pmset batt: power status could not be parsed")
 
     report: dict[str, object] = {
         "schema_version": 1,
         "metadata": {
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
             "sampling_duration_seconds": duration,
+            "sampler_overhead": "Probes can add transient CPU and I/O load during collection.",
             "architecture": platform.machine(),
             "uptime": uptime_value,
-            **_parse_sw_vers(static_results["sw_vers"].stdout),
+            **os_version,
             **hardware,
         },
         "load": load,
@@ -879,7 +926,10 @@ def collect_report(
         "limitations": sorted(set(limitations)),
     }
     if include_shell:
-        shell = measure_shell_startup(runner=runner)
+        effective_shell_runner = shell_runner
+        if effective_shell_runner is None:
+            effective_shell_runner = run_suppressed_command if runner is run_command else runner
+        shell = measure_shell_startup(runner=effective_shell_runner)
         report["shell"] = shell
         report["limitations"] = sorted(
             set([*report["limitations"], *shell.get("limitations", [])])
@@ -1105,9 +1155,11 @@ def render_markdown(report: dict[str, object]) -> str:
         "# macOS Performance Snapshot",
         "",
         f"- Time: {metadata.get('timestamp', 'n/a')}",
+        f"- macOS: {metadata.get('product_version', 'n/a')} (build {metadata.get('build_version', 'n/a')})",
         f"- Model: {metadata.get('model', 'n/a')} / {metadata.get('logical_cpus', 'n/a')} logical CPUs",
         f"- Sampling window: {metadata.get('sampling_duration_seconds', 'n/a')}s",
         f"- Uptime: {metadata.get('uptime', 'n/a')}",
+        f"- Sampler overhead: {metadata.get('sampler_overhead', 'Probes can add transient CPU and I/O load during collection.')}",
         "",
         "## Findings",
         "",
@@ -1131,9 +1183,9 @@ def render_markdown(report: dict[str, object]) -> str:
             f"- CPU avg user/system/idle: {_format_number(cpu.get('user_avg_pct'))}% / {_format_number(cpu.get('system_avg_pct'))}% / {_format_number(cpu.get('idle_avg_pct'))}%",
             f"- Physical memory: {_format_bytes(memory.get('physical_bytes'))}",
             f"- Memory used/compressor/free: {_format_bytes(memory.get('used_bytes'))} / {_format_bytes(memory.get('compressor_bytes'))} / {_format_bytes(memory.get('unused_bytes'))}",
-            f"- Memory pressure free: {memory.get('memory_pressure_free_pct', 'n/a')}%",
+            f"- Memory pressure free: {_format_number(memory.get('memory_pressure_free_pct'), 0)}%",
             f"- Swap used/total: {_format_bytes(memory.get('swap_used_bytes'))} / {_format_bytes(memory.get('swap_total_bytes'))}",
-            f"- Swap activity in/out: {float(memory.get('swapins_mib_per_second') or 0):.3f} / {float(memory.get('swapouts_mib_per_second') or 0):.3f} MiB/s",
+            f"- Swap activity in/out: {_format_number(memory.get('swapins_mib_per_second'), 3)} / {_format_number(memory.get('swapouts_mib_per_second'), 3)} MiB/s",
             f"- Disk used: {_format_number(disk.get('used_pct'))}%; SMART: {disk.get('smart_status', 'unavailable')}",
             f"- Disk avg: {_format_number(disk.get('avg_mib_per_second'))} MiB/s, {_format_number(disk.get('avg_tps'), 0)} tps, {_format_number(disk.get('avg_kb_per_transfer'))} KiB/transfer",
             f"- Processes/running/stuck/threads: {processes.get('process_count', 'n/a')} / {processes.get('running_count', 'n/a')} / {processes.get('stuck_count', 'n/a')} / {processes.get('thread_count', 'n/a')}",

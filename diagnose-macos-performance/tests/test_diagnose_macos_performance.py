@@ -328,6 +328,23 @@ class CollectionTests(unittest.TestCase):
         self.assertIn("iostat: live samples could not be parsed", limitations)
         self.assertIn("df: capacity could not be parsed", limitations)
         self.assertIn("thermal: status could not be parsed", limitations)
+        self.assertIn("sw_vers: OS version/build could not be parsed", limitations)
+        self.assertIn("pmset batt: power status could not be parsed", limitations)
+
+    def test_rate_sampler_marks_unparseable_vm_snapshots(self):
+        def malformed_runner(args, timeout):
+            del timeout
+            return self.result(args, stdout="unexpected output\n")
+
+        result = self.function("measure_rates")(
+            3,
+            [],
+            malformed_runner,
+            sleep_fn=lambda seconds: None,
+            process_refresher=lambda: [],
+        )
+        self.assertEqual(result["vm_rates"], {})
+        self.assertIn("vm_stat: counter snapshots could not be parsed", result["limitations"])
 
     def test_rejects_non_macos_platform(self):
         unsupported = self.function("UnsupportedPlatformError")
@@ -362,6 +379,22 @@ class CollectionTests(unittest.TestCase):
             result = self.function("run_command")(["/usr/sbin/diskutil"], timeout=1)
         self.assertEqual(result.error, "permission denied")
         self.assertNotIn("SecretProject", result.error)
+
+    def test_suppressed_runner_discards_shell_output(self):
+        completed = subprocess.CompletedProcess(
+            ["/bin/zsh", "-lic", "exit"],
+            0,
+            stdout=None,
+            stderr=None,
+        )
+        with mock.patch("subprocess.run", return_value=completed) as run:
+            result = self.function("run_suppressed_command")(
+                ["/bin/zsh", "-lic", "exit"], timeout=5
+            )
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+        self.assertIs(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
 
     def test_builds_process_io_rates_for_matching_processes(self):
         before = {
@@ -508,6 +541,21 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(shell["p90_seconds"], 0.4)
         self.assertEqual(timeouts, [5] * 6)
 
+    def test_injected_runner_is_also_used_for_shell_collection(self):
+        with mock.patch(
+            "subprocess.run", side_effect=AssertionError("live subprocess must not run")
+        ) as live_subprocess:
+            report = self.function("collect_report")(
+                duration=3,
+                include_shell=True,
+                runner=self.fake_runner,
+                platform_name="Darwin",
+                rate_sampler=self.fake_rate_sampler,
+                home="/Users/alice",
+            )
+        live_subprocess.assert_not_called()
+        self.assertIn("shell", report)
+
 
 class ReportingTests(unittest.TestCase):
     def function(self, name):
@@ -522,6 +570,9 @@ class ReportingTests(unittest.TestCase):
             "metadata": {
                 "timestamp": "2026-07-12T18:03:00+08:00",
                 "sampling_duration_seconds": 10,
+                "product_name": "macOS",
+                "product_version": "26.3.2",
+                "build_version": "25D2140",
                 "model": "Mac16,8",
                 "logical_cpus": 14,
                 "physical_memory_bytes": 48 * gib,
@@ -648,12 +699,20 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Top Memory Processes", markdown)
         self.assertIn("Swap activity", markdown)
         self.assertIn("Attribution", markdown)
+        self.assertIn("macOS: 26.3.2 (build 25D2140)", markdown)
+        self.assertIn("Sampler overhead:", markdown)
         self.assertIn("Limitations", markdown)
         self.assertIn("diskutil: permission denied", markdown)
         payload = json.loads(self.function("render_json")(report))
         self.assertEqual(payload["schema_version"], 1)
         self.assertTrue(payload["findings"])
         self.assertEqual(payload["limitations"], report["limitations"])
+
+    def test_markdown_renders_unknown_swap_rates_as_not_available(self):
+        report = self.high_pressure_report()
+        report["memory"].pop("swapouts_mib_per_second")
+        markdown = self.function("render_markdown")(report)
+        self.assertIn("Swap activity in/out: n/a / n/a MiB/s", markdown)
 
     def test_duration_parser_enforces_safe_range(self):
         parse = self.function("parse_duration")
