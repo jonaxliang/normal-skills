@@ -1,0 +1,4 @@
+interface:
+  display_name: "批量抓取小红书图片"
+  short_description: "批量提取并下载小红书图文帖子的全部图片，自动转换为 JPG"
+  default_prompt: "使用 $download-xhs-images 批量下载这些小红书帖子里的图片并保存为 JPG。"
