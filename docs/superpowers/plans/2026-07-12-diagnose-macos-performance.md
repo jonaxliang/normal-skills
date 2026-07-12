@@ -55,14 +55,14 @@ Expected: one plan commit; no skill directory exists yet.
 - Create: `diagnose-macos-performance/tests/test_diagnose_macos_performance.py`
 - Create: `diagnose-macos-performance/scripts/diagnose_macos_performance.py`
 
-- [ ] **Step 1: Initialize the skill after the baseline failure is observed**
+- [x] **Step 1: Initialize the skill after the baseline failure is observed**
 
 Run:
 
 ```bash
 python3 /Users/bytedance/.codex/skills/.system/skill-creator/scripts/init_skill.py \
   diagnose-macos-performance \
-  --path /Users/bytedance/Codes/extend/normal-skills \
+  --path /Users/bytedance/Codes/extend/normal-skills/.worktrees/diagnose-macos-performance \
   --resources scripts \
   --interface 'display_name=诊断 Mac 性能问题' \
   --interface 'short_description=只读采样 CPU、内存、磁盘与 Terminal 启动性能' \
@@ -72,7 +72,7 @@ mkdir -p diagnose-macos-performance/tests
 
 Expected: the four paths in the file map exist; generated frontmatter contains only `name` and `description`.
 
-- [ ] **Step 2: Write failing parser and calculation tests**
+- [x] **Step 2: Write failing parser and calculation tests**
 
 Create tests that import the script with `importlib` and assert these concrete APIs:
 
@@ -89,7 +89,7 @@ self.assertEqual(module.redact_path("/Users/alice/private/file", "/Users/alice")
 
 Fixtures must include two CPU samples and one cumulative plus two live `iostat` samples. Add malformed-input tests that return `None` or an empty sample list instead of throwing.
 
-- [ ] **Step 3: Run tests and verify RED**
+- [x] **Step 3: Run tests and verify RED**
 
 Run:
 
@@ -100,7 +100,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 
 Expected: FAIL because the collector module or named parser functions do not exist.
 
-- [ ] **Step 4: Implement the minimum pure parsing layer**
+- [x] **Step 4: Implement the minimum pure parsing layer**
 
 Implement these stable functions in the collector:
 
@@ -121,11 +121,11 @@ Implement these stable functions in the collector:
 
 Use binary byte units for memory, skip `iostat`'s first cumulative row, tolerate commas/periods in `top`, and never parse full command arguments.
 
-- [ ] **Step 5: Run tests and verify GREEN**
+- [x] **Step 5: Run tests and verify GREEN**
 
 Run the same `unittest discover` command. Expected: all parser tests PASS.
 
-- [ ] **Step 6: Commit the parser slice**
+- [x] **Step 6: Commit the parser slice**
 
 ```bash
 git add diagnose-macos-performance

@@ -1,0 +1,4 @@
+interface:
+  display_name: "诊断 Mac 性能问题"
+  short_description: "只读采样 CPU、内存、磁盘与 Terminal 启动性能"
+  default_prompt: "使用 $diagnose-macos-performance 检查这台 Mac 为什么变卡，并给出数值证据和根因分析。"
