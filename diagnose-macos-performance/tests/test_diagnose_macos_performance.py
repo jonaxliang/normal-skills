@@ -1,6 +1,8 @@
 import importlib.util
+import inspect
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -62,6 +64,15 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parse("load averages: 3.25 2.50 1.75"), (3.25, 2.5, 1.75))
         self.assertIsNone(parse("no load data"))
 
+    def test_parses_uptime_without_load_or_user_count(self):
+        parse = self.function("parse_uptime")
+        self.assertEqual(
+            parse("18:03 up 12 days, 21:28, 8 users, load averages: 10.00 8.00 6.00"),
+            "12 days, 21:28",
+        )
+        self.assertEqual(parse("18:03 up 3:05, 2 users, load averages: 1.0 1.0 1.0"), "3:05")
+        self.assertIsNone(parse("uptime unavailable"))
+
     def test_averages_cpu_samples(self):
         result = self.function("parse_cpu_samples")(CPU_FIXTURE)
         self.assertEqual(result["sample_count"], 2)
@@ -69,6 +80,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result["system_avg_pct"], 35.0)
         self.assertEqual(result["idle_avg_pct"], 20.0)
         self.assertEqual(self.function("parse_cpu_samples")("bad"), {"sample_count": 0})
+
+    def test_discards_a_lone_cumulative_top_cpu_sample(self):
+        result = self.function("parse_cpu_samples")(
+            "CPU usage: 10.0% user, 10.0% sys, 80.0% idle",
+            skip_first=True,
+        )
+        self.assertEqual(result, {"sample_count": 0})
 
     def test_parses_last_top_summary(self):
         text = (
@@ -119,6 +137,20 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result["avg_mib_per_second"], 70.0)
         self.assertEqual(self.function("parse_iostat")("bad"), {"sample_count": 0, "samples": []})
 
+    def test_aggregates_all_iostat_devices(self):
+        text = """
+              disk0                         disk2
+    KB/t  tps  MB/s              KB/t  tps  MB/s
+    5.00  100   0.50             10.00  200   2.00
+    4.00  100   0.40              8.00 1000   8.00
+    6.00  200   1.20             12.00  800   9.60
+"""
+        result = self.function("parse_iostat")(text)
+        self.assertEqual(result["sample_count"], 2)
+        self.assertEqual(result["avg_tps"], 1050.0)
+        self.assertEqual(result["avg_mib_per_second"], 9.6)
+        self.assertAlmostEqual(result["avg_kb_per_transfer"], 9.218, places=3)
+
     def test_parses_df_capacity(self):
         text = (
             "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
@@ -146,6 +178,16 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(result, {"smart_status": "Verified", "trim_status": "Yes"})
 
+    def test_parses_apfs_container_capacity(self):
+        result = self.function("parse_diskutil_info")(
+            "   SMART Status:              Verified\n"
+            "   Container Total Space:     994.7 GB (994662584320 Bytes)\n"
+            "   Container Free Space:      354.6 GB (354638299136 Bytes)\n"
+        )
+        self.assertEqual(result.get("container_total_bytes"), 994662584320)
+        self.assertEqual(result.get("container_free_bytes"), 354638299136)
+        self.assertAlmostEqual(result.get("container_used_pct", 0), 64.346, places=3)
+
     def test_parses_thermal_warning_state(self):
         parse = self.function("parse_thermal")
         self.assertEqual(
@@ -153,17 +195,20 @@ class ParserTests(unittest.TestCase):
             {"available": True, "warning": False},
         )
         self.assertEqual(parse("CPU_Speed_Limit = 50"), {"available": True, "warning": True})
+        self.assertEqual(parse("unexpected thermal output"), {"available": False, "warning": None})
         self.assertEqual(parse(""), {"available": False, "warning": None})
 
     def test_parses_ps_without_losing_spaces_and_redacts_home(self):
         text = (
             "5941 1 501 48.5 57104 S /Library/Application Support/Logitech/logi voice\n"
             "7000 1 501 1.0 1024 R /Users/alice/bin/private worker\n"
+            "8000 1 502 1.0 1024 S /Users/bob/SecretClient/private-worker\n"
         )
         rows = self.function("parse_ps")(text, "/Users/alice")
         self.assertEqual(rows[0]["pid"], 5941)
         self.assertEqual(rows[0]["executable"], "/Library/Application Support/Logitech/logi voice")
         self.assertEqual(rows[1]["executable"], "~/bin/private worker")
+        self.assertEqual(rows[2]["executable"], "/Users/<redacted>/…/private-worker")
         self.assertNotIn("arguments", rows[0])
 
     def test_calculates_non_negative_io_rate(self):
@@ -177,7 +222,7 @@ class ParserTests(unittest.TestCase):
         redact = self.function("redact_path")
         self.assertEqual(redact("/Users/alice/private/file", "/Users/alice"), "~/private/file")
         self.assertEqual(redact("/Users/alice", "/Users/alice"), "~")
-        self.assertEqual(redact("/Users/alice2/file", "/Users/alice"), "/Users/alice2/file")
+        self.assertEqual(redact("/Users/alice2/file", "/Users/alice"), "/Users/<redacted>/…/file")
 
 
 class CollectionTests(unittest.TestCase):
@@ -262,7 +307,27 @@ class CollectionTests(unittest.TestCase):
         self.assertFalse(report["thermal"]["warning"])
         self.assertNotIn("shell", report)
         self.assertTrue(any("diskutil" in item for item in report["limitations"]))
+        self.assertTrue(any("I/O attribution" in item for item in report["limitations"]))
         self.assertNotIn("/Users/alice", str(report))
+
+    def test_successful_but_unparseable_probes_become_limitations(self):
+        def malformed_runner(args, timeout):
+            del timeout
+            return self.result(args, stdout="unexpected output\n")
+
+        report = self.function("collect_report")(
+            duration=3,
+            include_shell=False,
+            runner=malformed_runner,
+            platform_name="Darwin",
+            rate_sampler=self.fake_rate_sampler,
+            home="/Users/alice",
+        )
+        limitations = "\n".join(report["limitations"])
+        self.assertIn("top: CPU samples could not be parsed", limitations)
+        self.assertIn("iostat: live samples could not be parsed", limitations)
+        self.assertIn("df: capacity could not be parsed", limitations)
+        self.assertIn("thermal: status could not be parsed", limitations)
 
     def test_rejects_non_macos_platform(self):
         unsupported = self.function("UnsupportedPlatformError")
@@ -286,6 +351,18 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(result.error, "timeout")
         self.assertGreaterEqual(result.elapsed_seconds, 0)
 
+    def test_run_command_classifies_permission_error_without_leaking_stderr(self):
+        completed = subprocess.CompletedProcess(
+            ["/usr/sbin/diskutil"],
+            1,
+            stdout="",
+            stderr="/Users/alice/SecretProject: Permission denied",
+        )
+        with mock.patch("subprocess.run", return_value=completed):
+            result = self.function("run_command")(["/usr/sbin/diskutil"], timeout=1)
+        self.assertEqual(result.error, "permission denied")
+        self.assertNotIn("SecretProject", result.error)
+
     def test_builds_process_io_rates_for_matching_processes(self):
         before = {
             10: {"executable": "reader", "read_bytes": 100, "write_bytes": 50},
@@ -294,7 +371,9 @@ class CollectionTests(unittest.TestCase):
         after = {
             10: {"executable": "reader", "read_bytes": 100 + 20 * 1024**2, "write_bytes": 50},
             20: {"executable": "reused", "read_bytes": 1000, "write_bytes": 0},
+            30: {"executable": "rollback", "read_bytes": 100, "write_bytes": 100},
         }
+        before[30] = {"executable": "rollback", "read_bytes": 200, "write_bytes": 50}
         rows = self.function("build_process_io_rates")(before, after, seconds=2.0)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["pid"], 10)
@@ -304,6 +383,7 @@ class CollectionTests(unittest.TestCase):
         processes = [
             {"pid": 10, "uid": 501, "executable": "reader"},
             {"pid": 20, "uid": 501, "executable": "denied"},
+            {"pid": 30, "uid": 0, "executable": "system"},
         ]
 
         def reader(pid):
@@ -314,13 +394,111 @@ class CollectionTests(unittest.TestCase):
         snapshot = self.function("snapshot_process_io")(processes, reader=reader, current_uid=501)
         self.assertEqual(snapshot["accessible_processes"], 1)
         self.assertEqual(snapshot["inaccessible_processes"], 1)
+        self.assertEqual(snapshot.get("skipped_other_user_processes"), 1)
         self.assertIn(10, snapshot["processes"])
 
-    def test_shell_timing_uses_one_clean_and_five_real_trials(self):
-        elapsed = iter([0.01, 0.2, 0.25, 0.3, 0.35, 0.4])
+    def test_rate_sampler_reads_processes_before_the_second_vm_probe(self):
+        events = []
+        calls = iter([(0, 0), (3 * 1024**2, 0)])
+        processes = [{"pid": 10, "uid": os.getuid(), "executable": "reader"}]
 
         def runner(args, timeout):
             del timeout
+            events.append(Path(args[0]).name)
+            return self.result(args, stdout=VM_STAT_FIXTURE)
+
+        def reader(pid):
+            self.assertEqual(pid, 10)
+            events.append("rusage")
+            return next(calls)
+
+        def sleep_fn(seconds):
+            self.assertEqual(seconds, 3)
+            events.append("sleep")
+
+        self.function("measure_rates")(
+            3,
+            processes,
+            runner,
+            sleep_fn=sleep_fn,
+            rusage_reader=reader,
+            process_refresher=lambda: processes,
+        )
+        self.assertEqual(events, ["vm_stat", "rusage", "sleep", "rusage", "vm_stat"])
+
+    def test_rate_sampler_uses_fresh_process_identity_for_second_snapshot(self):
+        measure = self.function("measure_rates")
+        self.assertIn("process_refresher", inspect.signature(measure).parameters)
+        calls = iter([(0, 0), (30 * 1024**2, 0)])
+
+        def runner(args, timeout):
+            del timeout
+            return self.result(args, stdout=VM_STAT_FIXTURE)
+
+        result = measure(
+            3,
+            [{"pid": 10, "uid": os.getuid(), "executable": "old-worker"}],
+            runner,
+            sleep_fn=lambda seconds: None,
+            rusage_reader=lambda pid: next(calls),
+            process_refresher=lambda: [
+                {"pid": 10, "uid": os.getuid(), "executable": "new-worker"}
+            ],
+        )
+        self.assertEqual(result["process_io"], [])
+
+    def test_aggregates_process_io_by_executable_before_ranking(self):
+        rows = [
+            {
+                "pid": 10,
+                "executable": "workers",
+                "read_mib_per_second": 20.0,
+                "write_mib_per_second": 1.0,
+            },
+            {
+                "pid": 11,
+                "executable": "workers",
+                "read_mib_per_second": 20.0,
+                "write_mib_per_second": 2.0,
+            },
+        ]
+        aggregated = self.function("aggregate_process_io_rates")(rows)
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated[0]["executable"], "workers")
+        self.assertEqual(aggregated[0]["pids"], [10, 11])
+        self.assertEqual(aggregated[0]["read_mib_per_second"], 40.0)
+        self.assertEqual(aggregated[0]["write_mib_per_second"], 3.0)
+
+    def test_collection_aggregates_duplicate_executables(self):
+        def rate_sampler(duration, processes, runner):
+            del duration, processes, runner
+            return {
+                "vm_rates": {},
+                "process_io": [
+                    {"pid": 10, "executable": "workers", "read_mib_per_second": 20.0, "write_mib_per_second": 0.0},
+                    {"pid": 11, "executable": "workers", "read_mib_per_second": 20.0, "write_mib_per_second": 0.0},
+                ],
+                "io_attribution": {"accessible_processes": 2, "inaccessible_processes": 0},
+                "limitations": [],
+            }
+
+        report = self.function("collect_report")(
+            duration=3,
+            include_shell=False,
+            runner=self.fake_runner,
+            platform_name="Darwin",
+            rate_sampler=rate_sampler,
+            home="/Users/alice",
+        )
+        self.assertEqual(len(report["processes"]["top_io"]), 1)
+        self.assertEqual(report["processes"]["top_io"][0]["read_mib_per_second"], 40.0)
+
+    def test_shell_timing_uses_one_clean_and_five_real_trials(self):
+        elapsed = iter([0.01, 0.2, 0.25, 0.3, 0.35, 0.4])
+        timeouts = []
+
+        def runner(args, timeout):
+            timeouts.append(timeout)
             return self.result(args, elapsed=next(elapsed))
 
         shell = self.function("measure_shell_startup")(runner=runner)
@@ -328,6 +506,7 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(shell["trial_count"], 5)
         self.assertEqual(shell["median_seconds"], 0.3)
         self.assertEqual(shell["p90_seconds"], 0.4)
+        self.assertEqual(timeouts, [5] * 6)
 
 
 class ReportingTests(unittest.TestCase):
@@ -385,7 +564,9 @@ class ReportingTests(unittest.TestCase):
                 "stuck_count": 2,
                 "thread_count": 12900,
                 "top_cpu": [{"pid": 42, "executable": "reader", "cpu_pct": 60.0, "rss_bytes": gib}],
-                "top_memory": [],
+                "top_memory": [
+                    {"pid": 43, "executable": "large-app", "cpu_pct": 1.0, "rss_bytes": 3 * gib}
+                ],
                 "top_io": [
                     {
                         "pid": 42,
@@ -394,7 +575,11 @@ class ReportingTests(unittest.TestCase):
                         "write_mib_per_second": 0.0,
                     }
                 ],
-                "io_attribution": {"accessible_processes": 10, "inaccessible_processes": 3},
+                "io_attribution": {
+                    "accessible_processes": 10,
+                    "inaccessible_processes": 3,
+                    "skipped_other_user_processes": 200,
+                },
                 "executable_counts": [],
             },
             "thermal": {"available": True, "warning": False},
@@ -444,10 +629,25 @@ class ReportingTests(unittest.TestCase):
         self.assertFalse(any(item["category"] == "memory" for item in findings))
         self.assertNotIn("OOM", str(findings))
 
+    def test_not_supported_smart_is_unavailable_not_a_failure(self):
+        report = self.high_pressure_report()
+        report["disk"]["smart_status"] = "Not Supported"
+        findings = self.function("derive_findings")(report)
+        self.assertFalse(any(item["category"] == "disk_health" for item in findings))
+
+    def test_swap_occupancy_finding_does_not_claim_a_fixed_limit(self):
+        findings = self.function("derive_findings")(self.high_pressure_report())
+        swap = next(item for item in findings if item["category"] == "memory" and "Swap" in item["summary"])
+        self.assertNotIn("上限", swap["summary"])
+
     def test_markdown_and_json_include_findings_metrics_and_limitations(self):
         report = self.high_pressure_report()
         markdown = self.function("render_markdown")(report)
         self.assertIn("60.0 MiB/s", markdown)
+        self.assertIn("Physical memory: 48.0 GiB", markdown)
+        self.assertIn("Top Memory Processes", markdown)
+        self.assertIn("Swap activity", markdown)
+        self.assertIn("Attribution", markdown)
         self.assertIn("Limitations", markdown)
         self.assertIn("diskutil: permission denied", markdown)
         payload = json.loads(self.function("render_json")(report))

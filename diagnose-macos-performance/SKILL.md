@@ -15,7 +15,7 @@ description: Use when a macOS computer feels slow, laggy, frozen, unusually hot,
 python3 <skill-dir>/scripts/diagnose_macos_performance.py --duration 10
 ```
 
-用户明确提到 Terminal、Ghostty、iTerm 或 shell 启动慢时，额外运行：
+用户明确提到 Terminal、Ghostty、iTerm 或 shell 启动慢时，先说明下一探针会真实启动 login shell 五次，可能触发其启动脚本中的缓存、凭据、网络或后台动作；取得明确授权后才运行：
 
 ```bash
 python3 <skill-dir>/scripts/diagnose_macos_performance.py --duration 10 --include-shell
@@ -40,7 +40,7 @@ codesign --verify --strict --verbose=4 '/path/to/Suspect.app'
 ## 因果置信度
 
 - **测量事实**：采样值、进程速率、文件描述符、调用栈、签名结果。
-- **强支持链**：持续异常进程 → 对应文件 → 栈中相关操作 → 独立验证失败。四项缺一时不得写“强支持”或“根因”，只能写“当前最高优先级假设”，并指出缺失证据。
+- **强支持链**：持续异常 → 对应资源/操作 → 匹配的调用栈或事件 → 与该假设相适配的独立验证。应用完整性问题可用 `codesign`，索引、编译、内存或网络问题使用各自的独立证据。关键链路缺失时不得写“强支持”或“根因”，只能写“当前最高优先级假设”，并指出缺失证据。
 - **推断**：安全进程、Spotlight、WindowServer 与异常同时出现但缺少直接链路。
 
 报告时给每条结论标注层级。不要把相关性写成因果，也不要把单次 `ps` CPU 当成持续占用。
