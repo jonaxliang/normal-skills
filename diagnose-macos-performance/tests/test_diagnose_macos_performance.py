@@ -1,7 +1,9 @@
 import importlib.util
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diagnose_macos_performance.py"
@@ -32,6 +34,17 @@ Pages occupied by compressor:              300.
 Swapins:                                    20.
 Swapouts:                                    5.
 "Translation faults":                    9999.
+"""
+
+TOP_FIXTURE = """
+Processes: 900 total, 20 running, 1 stuck, 879 sleeping, 12000 threads
+Load Avg: 10.00, 8.00, 6.00
+CPU usage: 40.0% user, 50.0% sys, 10.0% idle
+PhysMem: 47G used (6409M wired, 24G compressor), 382M unused.
+Processes: 905 total, 22 running, 2 stuck, 881 sleeping, 12100 threads
+Load Avg: 12.00, 9.00, 7.00
+CPU usage: 50.0% user, 20.0% sys, 30.0% idle
+PhysMem: 47G used (6410M wired, 24G compressor), 300M unused.
 """
 
 
@@ -153,6 +166,156 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(redact("/Users/alice/private/file", "/Users/alice"), "~/private/file")
         self.assertEqual(redact("/Users/alice", "/Users/alice"), "~")
         self.assertEqual(redact("/Users/alice2/file", "/Users/alice"), "/Users/alice2/file")
+
+
+class CollectionTests(unittest.TestCase):
+    def function(self, name):
+        value = getattr(MODULE, name, None)
+        self.assertIsNotNone(value, f"missing function: {name}")
+        return value
+
+    def result(self, args, stdout="", returncode=0, stderr="", error=None, elapsed=0.01):
+        cls = self.function("CommandResult")
+        return cls(tuple(args), returncode, stdout, stderr, elapsed, error)
+
+    def fake_runner(self, args, timeout):
+        del timeout
+        name = Path(args[0]).name
+        if name == "sw_vers":
+            output = "ProductName:\tmacOS\nProductVersion:\t26.3.2\nBuildVersion:\t25D2140\n"
+        elif name == "sysctl" and args[-1] == "vm.swapusage":
+            output = "vm.swapusage: total = 21504.00M used = 20700.06M free = 803.94M (encrypted)\n"
+        elif name == "sysctl":
+            output = "Mac16,8\n14\n51539607552\n"
+        elif name == "uptime":
+            output = "18:03 up 12 days, 8 users, load averages: 10.00 8.00 6.00\n"
+        elif name == "df":
+            output = "/dev/disk3s1s1 1000000 600000 400000 60% 1 2 0% /\n"
+        elif name == "diskutil":
+            return self.result(args, returncode=1, stderr="permission denied", error="exit 1")
+        elif name == "memory_pressure":
+            output = "System-wide memory free percentage: 34%\n"
+        elif name == "pmset" and args[-1] == "therm":
+            output = "Note: No thermal warning level has been recorded\n"
+        elif name == "pmset" and args[-1] == "batt":
+            output = "Now drawing from 'AC Power'\n -InternalBattery-0\t99%; charging; present: true\n"
+        elif name == "ps":
+            output = (
+                "5941 1 501 48.5 57104 S /Library/Application Support/Logitech/logi voice\n"
+                "7000 1 501 5.0 1024 R /Users/alice/bin/helper\n"
+            )
+        elif name == "top":
+            output = TOP_FIXTURE
+        elif name == "iostat":
+            output = IOSTAT_FIXTURE
+        elif name == "vm_stat":
+            output = VM_STAT_FIXTURE
+        else:
+            return self.result(args, returncode=127, stderr="not found", error="not found")
+        return self.result(args, stdout=output)
+
+    def fake_rate_sampler(self, duration, processes, runner):
+        del duration, processes, runner
+        return {
+            "vm_rates": {"swapins_mib_per_second": 1.5, "swapouts_mib_per_second": 0.0},
+            "process_io": [
+                {
+                    "pid": 5941,
+                    "executable": "/Library/Application Support/Logitech/logi voice",
+                    "read_mib_per_second": 60.0,
+                    "write_mib_per_second": 0.0,
+                }
+            ],
+            "io_attribution": {"accessible_processes": 2, "inaccessible_processes": 1},
+            "limitations": [],
+        }
+
+    def test_collects_sections_and_preserves_partial_failures(self):
+        report = self.function("collect_report")(
+            duration=3,
+            include_shell=False,
+            runner=self.fake_runner,
+            platform_name="Darwin",
+            rate_sampler=self.fake_rate_sampler,
+            home="/Users/alice",
+        )
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["metadata"]["logical_cpus"], 14)
+        self.assertEqual(report["load"]["one_minute"], 12.0)
+        self.assertEqual(report["cpu"]["idle_avg_pct"], 30.0)
+        self.assertEqual(report["memory"]["swap_used_bytes"], 21705586114)
+        self.assertEqual(report["disk"]["avg_tps"], 15000.0)
+        self.assertEqual(report["processes"]["process_count"], 905)
+        self.assertEqual(report["processes"]["top_io"][0]["read_mib_per_second"], 60.0)
+        self.assertFalse(report["thermal"]["warning"])
+        self.assertNotIn("shell", report)
+        self.assertTrue(any("diskutil" in item for item in report["limitations"]))
+        self.assertNotIn("/Users/alice", str(report))
+
+    def test_rejects_non_macos_platform(self):
+        unsupported = self.function("UnsupportedPlatformError")
+        with self.assertRaises(unsupported):
+            self.function("collect_report")(
+                duration=3,
+                include_shell=False,
+                runner=self.fake_runner,
+                platform_name="Linux",
+                rate_sampler=self.fake_rate_sampler,
+                home="/Users/alice",
+            )
+
+    def test_run_command_turns_timeout_into_data(self):
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["/usr/bin/top"], timeout=1),
+        ):
+            result = self.function("run_command")(["/usr/bin/top"], timeout=1)
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(result.error, "timeout")
+        self.assertGreaterEqual(result.elapsed_seconds, 0)
+
+    def test_builds_process_io_rates_for_matching_processes(self):
+        before = {
+            10: {"executable": "reader", "read_bytes": 100, "write_bytes": 50},
+            20: {"executable": "gone", "read_bytes": 100, "write_bytes": 0},
+        }
+        after = {
+            10: {"executable": "reader", "read_bytes": 100 + 20 * 1024**2, "write_bytes": 50},
+            20: {"executable": "reused", "read_bytes": 1000, "write_bytes": 0},
+        }
+        rows = self.function("build_process_io_rates")(before, after, seconds=2.0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["pid"], 10)
+        self.assertEqual(rows[0]["read_mib_per_second"], 10.0)
+
+    def test_snapshot_counts_inaccessible_processes(self):
+        processes = [
+            {"pid": 10, "uid": 501, "executable": "reader"},
+            {"pid": 20, "uid": 501, "executable": "denied"},
+        ]
+
+        def reader(pid):
+            if pid == 20:
+                raise PermissionError("denied")
+            return 100, 10
+
+        snapshot = self.function("snapshot_process_io")(processes, reader=reader, current_uid=501)
+        self.assertEqual(snapshot["accessible_processes"], 1)
+        self.assertEqual(snapshot["inaccessible_processes"], 1)
+        self.assertIn(10, snapshot["processes"])
+
+    def test_shell_timing_uses_one_clean_and_five_real_trials(self):
+        elapsed = iter([0.01, 0.2, 0.25, 0.3, 0.35, 0.4])
+
+        def runner(args, timeout):
+            del timeout
+            return self.result(args, elapsed=next(elapsed))
+
+        shell = self.function("measure_shell_startup")(runner=runner)
+        self.assertEqual(shell["clean_seconds"], 0.01)
+        self.assertEqual(shell["trial_count"], 5)
+        self.assertEqual(shell["median_seconds"], 0.3)
+        self.assertEqual(shell["p90_seconds"], 0.4)
 
 
 if __name__ == "__main__":

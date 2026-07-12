@@ -138,7 +138,7 @@ git commit -m "feat: add macOS performance metric parsers"
 - Modify: `diagnose-macos-performance/scripts/diagnose_macos_performance.py`
 - Modify: `diagnose-macos-performance/tests/test_diagnose_macos_performance.py`
 
-- [ ] **Step 1: Write failing collection/degradation tests**
+- [x] **Step 1: Write failing collection/degradation tests**
 
 Use a fake runner returning `CommandResult(args, returncode, stdout, stderr, elapsed_seconds, error)` and assert:
 
@@ -154,7 +154,7 @@ self.assertTrue(report["limitations"])
 
 Add tests for unsupported platforms returning exit code `2`, a timed-out command becoming a limitation, same-PID I/O deltas being converted to MiB/s, inaccessible PIDs being counted but not fatal, and output paths replacing the home prefix with `~`.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -165,7 +165,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 
 Expected: FAIL because live collection APIs are missing.
 
-- [ ] **Step 3: Implement safe command execution and concurrent sampling**
+- [x] **Step 3: Implement safe command execution and concurrent sampling**
 
 Add:
 
@@ -185,19 +185,19 @@ Add `run_command(args, timeout)` to return this dataclass for success, non-zero 
 
 Set `sample_count = duration + 1`, then run `top -l sample_count -s 1 -n 0`, `iostat -d -c sample_count -w 1`, and the VM/process-I/O delta window concurrently so a default 10-second request remains bounded. Discard each command's cumulative first sample. Collect static facts with `sw_vers`, `sysctl`, `uptime`, `df -k /`, `diskutil info /`, `memory_pressure -Q`, `pmset -g therm`, `pmset -g batt`, and privacy-safe `ps -Ao pid=,ppid=,uid=,%cpu=,rss=,state=,comm=`.
 
-- [ ] **Step 4: Implement current-user process I/O attribution**
+- [x] **Step 4: Implement current-user process I/O attribution**
 
 Use `ctypes` to call `/usr/lib/libproc.dylib` `proc_pid_rusage(pid, RUSAGE_INFO_V2, buffer)`. Read `ri_diskio_bytesread` and `ri_diskio_byteswritten`, join before/after snapshots by PID and executable name, skip negative deltas, and retain the ten highest read/write rates. Count `EPERM`/vanished processes in limitations without printing arguments or escalating privileges.
 
-- [ ] **Step 5: Implement opt-in shell timing**
+- [x] **Step 5: Implement opt-in shell timing**
 
 Measure one `/bin/zsh -dflic exit` baseline and five `/bin/zsh -lic exit` trials using `time.monotonic()`, suppressed stdout, bounded per-trial timeouts, and median/P90/min/max fields. Do not read or print rc contents.
 
-- [ ] **Step 6: Run tests and verify GREEN**
+- [x] **Step 6: Run tests and verify GREEN**
 
 Run the complete test suite. Expected: all parser and collection tests PASS without accessing the live machine.
 
-- [ ] **Step 7: Commit live collection**
+- [x] **Step 7: Commit live collection**
 
 ```bash
 git add diagnose-macos-performance/scripts diagnose-macos-performance/tests
