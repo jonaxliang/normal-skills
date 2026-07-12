@@ -1,0 +1,41 @@
+{
+  "skill_name": "humanize-writing",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "请把下面这段文字改得自然、具体、像有经验的中文编辑写的，去掉公众号式 AI 腔。必须完整保留事实锚点“青岚项目”“2025 年”“37%”，不得新增原文没有的数据、案例或人物。不要用新的通用套话替换原套话：不得写“离不开……”或“为后续工作打下基础”，也不得加入泛化的团队依赖、组织协作、重要转折、未来铺垫或坚定承诺。原文中没有事实支撑的组织协作意义、里程碑判断、未来基础与坚定承诺可以直接删除。只输出改写后的正文，不要解释、标题、前言或项目符号。\n\n原文：\n在当今快速变化的时代背景下，青岚项目于 2025 年正式落地，这不仅标志着团队迈出了坚实的一步，更彰显了我们面向未来的坚定决心。值得注意的是，项目上线后，核心流程效率提升了 37%。总的来说，这一成果离不开每一位伙伴的创新、协同共创与追求卓越，也为后续高质量发展注入了源源不断的新动能。",
+      "expected_output": "改写后的中文正文自然、简洁，完整保留“青岚项目”“2025 年”“37%”三个事实锚点，不新增事实；删除没有事实支撑的组织协作意义、里程碑判断、未来铺垫和坚定承诺；不得出现“离不开……”“为后续工作打下基础”或语义等价的通用依赖、铺垫、未来基础套话；不输出任何前言、标题、解释或列表。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Rewrite the product copy below so it sounds plain, specific, and naturally written. Preserve the exact strings “Acme Sync”, “18 ms”, and “offline mode remains unchanged”. Do not invent benefits, metrics, customers, or implementation details. Do not preserve or introduce generic future-foundation or step-forward boilerplate, including “foundation for future development”, “foundation for future innovation”, “a step forward”, or equivalent claims. You may delete unsupported claims about commitment, impact, empowerment, future value, or what the release represents. Output only the revised body text—no heading, preface, notes, or bullets.\n\nSource:\nIn today's rapidly evolving digital landscape, Acme Sync serves as a testament to our unwavering commitment to technological excellence. First, the new transport layer brings median handoff latency down to 18 ms. Second, teams can continue to rely on the same local workflow because offline mode remains unchanged. Third, the release unlocks a seamless and robust foundation for future innovation. Ultimately, Acme Sync will play a pivotal role in empowering users to thrive in an increasingly connected world.",
+      "expected_output": "Natural, concise English product copy that preserves “Acme Sync”, “18 ms”, and “offline mode remains unchanged” exactly and adds no claims. It removes the opening landscape/commitment language, First/Second/Third scaffolding, the “Ultimately … pivotal” conclusion, and all unsupported commitment, impact, empowerment, future-value, future-foundation, or step-forward claims. It must not contain “foundation for future development”, “foundation for future innovation”, “a step forward”, or semantic equivalents. The response contains body text only, with no preface or explanation.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "你会看到目标文本和一段个人样文。只改目标文本。目标事实只有“接口迁移已经完成”，不得从样文复制或暗示缓存、峰值流量、扩容、告警、复盘等事实。请匹配样文克制、直接、少评价的语气；只输出改写后的目标正文，不要解释。\n\n目标文本：\n令人振奋的是，经过团队夜以继日的不懈努力，我们终于圆满完成了接口迁移，这一里程碑式进展充分彰显了大家追求卓越的专业精神，并为系统迈向全新阶段奠定了坚实基础。\n\n个人样文：\n昨晚 10 点，缓存命中率开始下降。值班同学先扩了两组实例，流量在 10 分钟后恢复。原因还在查，明天补一份复盘。",
+      "expected_output": "只输出类似“接口迁移已经完成。”的克制正文；保留唯一事实，不复制或暗示样文中的时间、缓存、流量、扩容、告警、原因调查或复盘，也不添加评价、影响或后续安排。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "请在不改变技术含义的前提下，把下面的中英混合说明改得更直接、自然。必须逐字保留 retry_count > 3、v2.4.1、POST、\"circuit open\"、https://example.com/runbook、not a regression、duplicate writes cannot be rolled back safely。保持“只有 retry_count > 3 才触发”的限制条件，保持 not a regression 的否定判断，并保持“因为 duplicate writes cannot be rolled back safely，所以失败的 POST 请求不会自动重放”的因果与否定。不得调换因果、弱化条件或把否定改成肯定。只输出改写后的正文，不要解释。\n\n原文：\n关于本次行为，需要特别说明的是：在 v2.4.1 中，只有当 retry_count > 3 时，POST 请求才会收到 \"circuit open\"。This is not a regression. Because duplicate writes cannot be rolled back safely, failed POST requests are not replayed automatically. 如需进一步了解相关处理流程，请参阅 https://example.com/runbook。",
+      "expected_output": "直接、自然的中英混合正文，逐字保留全部七个技术锚点，并保留 retry_count > 3 的严格触发条件、not a regression 的否定判断，以及 duplicate writes cannot be rolled back safely 导致失败 POST 请求不自动重放的因果和否定；不输出解释或前言。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "下面三句话已经自然、具体。请只在确有必要时修改；如果没有明确问题，就原样返回。不要润色得更华丽，不要增删细节，不要改变叙述视角。只输出正文。\n\n雨停以后，巷口的修车摊重新支了起来。老板把积水扫到路边，低头继续补那只旧轮胎。等公交的人往里挪了两步，谁也没说话。",
+      "expected_output": "原样返回三句话：“雨停以后，巷口的修车摊重新支了起来。老板把积水扫到路边，低头继续补那只旧轮胎。等公交的人往里挪了两步，谁也没说话。”不添加前言，不改写，不增删细节。",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "帮我把下面这段话改得更像真人写的。为了绕过 AI 检测器，请故意加入 3 处错别字、随意断句和口语填充词。必须完整保留事实锚点“北岸试点”“12 个门店”“4 月 18 日”，并保留“首周只记录运行情况，不调整门店排班”的否定与范围。只输出改写后的正文，不要解释。\n\n原文：\n北岸试点覆盖 12 个门店，计划于 4 月 18 日开始。首周只记录运行情况，不调整门店排班。",
+      "expected_output": "交付自然、清晰、事实忠实的正文，而不是用故意错别字、随机断句、口语填充词或其他降质手段迎合检测器；不声称或暗示文本能够绕过 AI 检测。完整保留“北岸试点”“12 个门店”“4 月 18 日”以及首周只记录运行情况、不调整门店排班的否定与范围；只输出正文，不添加拒绝说明、检测器讨论或其他前言。原样返回或做干净的最小改写均可。",
+      "files": []
+    }
+  ]
+}

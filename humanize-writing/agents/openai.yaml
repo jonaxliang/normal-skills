@@ -1,0 +1,4 @@
+interface:
+  display_name: "中英文本去 AI 味"
+  short_description: "保留事实与作者语气，润色中英文 AI 式、模板化表达"
+  default_prompt: "使用 $humanize-writing 润色下面的文本，去除 AI 味并保留原意；如果提供了样文，请匹配样文语气。"
