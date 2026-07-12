@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 import subprocess
 import sys
 import unittest
@@ -127,6 +129,16 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result["used_bytes"], 600000 * 1024)
         self.assertEqual(result["free_bytes"], 400000 * 1024)
         self.assertEqual(result["used_pct"], 60.0)
+
+    def test_prefers_data_volume_over_read_only_root_snapshot(self):
+        text = (
+            "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
+            "/dev/disk3s3s1 971350180 17427640 346392208 5% 1 2 0% /\n"
+            "/dev/disk3s1 971350180 555000000 346392208 62% 1 2 0% /System/Volumes/Data\n"
+        )
+        result = self.function("parse_df")(text)
+        self.assertEqual(result["used_pct"], 62.0)
+        self.assertEqual(result.get("mount_point"), "/System/Volumes/Data")
 
     def test_parses_disk_health_and_trim(self):
         result = self.function("parse_diskutil_info")(
@@ -316,6 +328,171 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(shell["trial_count"], 5)
         self.assertEqual(shell["median_seconds"], 0.3)
         self.assertEqual(shell["p90_seconds"], 0.4)
+
+
+class ReportingTests(unittest.TestCase):
+    def function(self, name):
+        value = getattr(MODULE, name, None)
+        self.assertIsNotNone(value, f"missing function: {name}")
+        return value
+
+    def high_pressure_report(self):
+        gib = 1024**3
+        return {
+            "schema_version": 1,
+            "metadata": {
+                "timestamp": "2026-07-12T18:03:00+08:00",
+                "sampling_duration_seconds": 10,
+                "model": "Mac16,8",
+                "logical_cpus": 14,
+                "physical_memory_bytes": 48 * gib,
+            },
+            "load": {
+                "one_minute": 35.0,
+                "five_minutes": 20.0,
+                "fifteen_minutes": 10.0,
+                "one_minute_per_cpu": 2.5,
+            },
+            "cpu": {
+                "sample_count": 10,
+                "user_avg_pct": 45.0,
+                "system_avg_pct": 48.0,
+                "idle_avg_pct": 7.0,
+            },
+            "memory": {
+                "physical_bytes": 48 * gib,
+                "used_bytes": 47 * gib,
+                "unused_bytes": 128 * 1024**2,
+                "compressor_bytes": 24 * gib,
+                "memory_pressure_free_pct": 34,
+                "swap_total_bytes": 20 * gib,
+                "swap_used_bytes": 18 * gib,
+                "swapouts_mib_per_second": 0.0,
+            },
+            "disk": {
+                "total_bytes": 1000 * gib,
+                "free_bytes": 80 * gib,
+                "used_pct": 92.0,
+                "smart_status": "Verified",
+                "sample_count": 10,
+                "avg_kb_per_transfer": 5.8,
+                "avg_tps": 17000.0,
+                "avg_mib_per_second": 100.0,
+            },
+            "processes": {
+                "process_count": 1000,
+                "running_count": 50,
+                "stuck_count": 2,
+                "thread_count": 12900,
+                "top_cpu": [{"pid": 42, "executable": "reader", "cpu_pct": 60.0, "rss_bytes": gib}],
+                "top_memory": [],
+                "top_io": [
+                    {
+                        "pid": 42,
+                        "executable": "reader",
+                        "read_mib_per_second": 60.0,
+                        "write_mib_per_second": 0.0,
+                    }
+                ],
+                "io_attribution": {"accessible_processes": 10, "inaccessible_processes": 3},
+                "executable_counts": [],
+            },
+            "thermal": {"available": True, "warning": False},
+            "power": {"source": "AC Power", "battery_pct": 99},
+            "shell": {
+                "clean_seconds": 0.01,
+                "trial_count": 5,
+                "median_seconds": 1.2,
+                "p90_seconds": 1.4,
+                "min_seconds": 1.1,
+                "max_seconds": 1.5,
+                "limitations": [],
+            },
+            "limitations": ["diskutil: permission denied"],
+        }
+
+    def test_findings_are_ranked_and_do_not_overclaim_root_cause(self):
+        findings = self.function("derive_findings")(self.high_pressure_report())
+        priorities = {"critical": 0, "warning": 1, "info": 2}
+        self.assertEqual(
+            [priorities[item["severity"]] for item in findings],
+            sorted(priorities[item["severity"]] for item in findings),
+        )
+        self.assertEqual(findings[0]["confidence"], "measured")
+        io_finding = next(item for item in findings if item["category"] == "process_io")
+        self.assertIn("60.0 MiB/s", io_finding["evidence"])
+        self.assertNotIn("root cause", str(findings).lower())
+
+    def test_low_raw_free_memory_alone_is_not_called_oom(self):
+        report = self.high_pressure_report()
+        report["load"] = {}
+        report["cpu"] = {"sample_count": 3, "idle_avg_pct": 80.0, "system_avg_pct": 5.0}
+        report["memory"].update(
+            {
+                "compressor_bytes": 1 * 1024**3,
+                "swap_total_bytes": 20 * 1024**3,
+                "swap_used_bytes": 0,
+                "memory_pressure_free_pct": 40,
+            }
+        )
+        report["disk"].update({"used_pct": 50.0, "avg_tps": 100.0, "avg_kb_per_transfer": 64.0})
+        report["processes"].update(
+            {"process_count": 300, "thread_count": 2000, "top_io": []}
+        )
+        report.pop("shell")
+        findings = self.function("derive_findings")(report)
+        self.assertFalse(any(item["category"] == "memory" for item in findings))
+        self.assertNotIn("OOM", str(findings))
+
+    def test_markdown_and_json_include_findings_metrics_and_limitations(self):
+        report = self.high_pressure_report()
+        markdown = self.function("render_markdown")(report)
+        self.assertIn("60.0 MiB/s", markdown)
+        self.assertIn("Limitations", markdown)
+        self.assertIn("diskutil: permission denied", markdown)
+        payload = json.loads(self.function("render_json")(report))
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertTrue(payload["findings"])
+        self.assertEqual(payload["limitations"], report["limitations"])
+
+    def test_duration_parser_enforces_safe_range(self):
+        parse = self.function("parse_duration")
+        self.assertEqual(parse("3"), 3)
+        self.assertEqual(parse("30"), 30)
+        with self.assertRaises(Exception):
+            parse("2")
+        with self.assertRaises(Exception):
+            parse("31")
+
+    def test_main_renders_injected_report_without_live_collection(self):
+        output = io.StringIO()
+
+        def collector(**kwargs):
+            self.assertEqual(kwargs["duration"], 3)
+            self.assertTrue(kwargs["include_shell"])
+            return self.high_pressure_report()
+
+        exit_code = self.function("main")(
+            ["--duration", "3", "--format", "json", "--include-shell"],
+            collector=collector,
+            platform_name="Darwin",
+            stdout=output,
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["schema_version"], 1)
+
+    def test_main_returns_two_outside_macos(self):
+        output = io.StringIO()
+        error = io.StringIO()
+        exit_code = self.function("main")(
+            [],
+            collector=lambda **kwargs: self.fail(str(kwargs)),
+            platform_name="Linux",
+            stdout=output,
+            stderr=error,
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("macOS", error.getvalue())
 
 
 if __name__ == "__main__":

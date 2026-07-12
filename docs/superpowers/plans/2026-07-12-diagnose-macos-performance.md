@@ -210,7 +210,7 @@ git commit -m "feat: collect bounded macOS performance evidence"
 - Modify: `diagnose-macos-performance/scripts/diagnose_macos_performance.py`
 - Modify: `diagnose-macos-performance/tests/test_diagnose_macos_performance.py`
 
-- [ ] **Step 1: Write failing finding/rendering tests**
+- [x] **Step 1: Write failing finding/rendering tests**
 
 Assert that `derive_findings(report)` sorts `critical`, `warning`, then `info`; that high load is normalized by logical CPU count; that low raw-free memory alone is not called OOM; that a high-I/O process includes its measured MiB/s; and that both renderers include `limitations`.
 
@@ -222,15 +222,15 @@ self.assertIn("MiB/s", module.render_markdown(HIGH_PRESSURE_REPORT))
 self.assertEqual(json.loads(module.render_json(HIGH_PRESSURE_REPORT))["schema_version"], 1)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run all tests. Expected: FAIL because findings, renderers and CLI are missing.
 
-- [ ] **Step 3: Implement advisory classification and rendering**
+- [x] **Step 3: Implement advisory classification and rendering**
 
 Create findings with `severity`, `category`, `summary`, `evidence`, and `confidence`. Use conservative thresholds documented in code: load/core `>=2` critical and `>=1` warning; average idle `<10%` critical and `<25%` warning; swap occupancy `>=80%` warning; compressor `>=35%` of RAM warning; disk free `<10%` critical and `<20%` warning; SMART other than `Verified` critical; process read rate `>=50 MiB/s` critical and `>=25 MiB/s` warning; shell median `>=1s` critical and `>=0.5s` warning. These are triage flags, not automatic root-cause claims.
 
-- [ ] **Step 4: Implement CLI and stable exit codes**
+- [x] **Step 4: Implement CLI and stable exit codes**
 
 Support:
 
@@ -242,7 +242,7 @@ Support:
 
 Exit `0` after a completed/degraded collection, `1` when collection cannot start, and `2` outside macOS. Catch `BrokenPipeError` without a traceback.
 
-- [ ] **Step 5: Verify GREEN and CLI behavior**
+- [x] **Step 5: Verify GREEN and CLI behavior**
 
 Run:
 
@@ -254,7 +254,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 diagnose-macos-performance/scripts/diagnose_ma
 
 Expected: tests PASS; help exits `0`; live JSON parses, has `schema_version: 1`, and lists limitations instead of tracebacks.
 
-- [ ] **Step 6: Commit reporting and CLI**
+- [x] **Step 6: Commit reporting and CLI**
 
 ```bash
 git add diagnose-macos-performance/scripts diagnose-macos-performance/tests

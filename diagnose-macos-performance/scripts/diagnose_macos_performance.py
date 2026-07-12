@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import ctypes
+import json
 import math
 import os
 import platform
@@ -11,6 +13,7 @@ import re
 import statistics
 import struct
 import subprocess
+import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -189,6 +192,7 @@ def parse_df(text: str) -> dict[str, int | float]:
             "used_bytes": used_kib * 1024,
             "free_bytes": free_kib * 1024,
             "used_pct": used_pct,
+            "mount_point": fields[-1],
         }
     return {}
 
@@ -578,7 +582,7 @@ def collect_report(
         "sw_vers": (["/usr/bin/sw_vers"], 5),
         "hardware": (["/usr/sbin/sysctl", "-n", "hw.model", "hw.logicalcpu", "hw.memsize"], 5),
         "uptime": (["/usr/bin/uptime"], 5),
-        "df": (["/bin/df", "-k", "/"], 5),
+        "df": (["/bin/df", "-k", "/", "/System/Volumes/Data"], 5),
         "diskutil": (["/usr/sbin/diskutil", "info", "/"], 10),
         "memory_pressure": (["/usr/bin/memory_pressure", "-Q"], 5),
         "swap": (["/usr/sbin/sysctl", "vm.swapusage"], 5),
@@ -687,3 +691,330 @@ def collect_report(
             set([*report["limitations"], *shell.get("limitations", [])])
         )
     return report
+
+
+_SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
+
+
+def _finding(
+    severity: str,
+    category: str,
+    summary: str,
+    evidence: str,
+    *,
+    confidence: str = "measured",
+) -> dict[str, str]:
+    return {
+        "severity": severity,
+        "category": category,
+        "summary": summary,
+        "evidence": evidence,
+        "confidence": confidence,
+    }
+
+
+def derive_findings(report: dict[str, object]) -> list[dict[str, str]]:
+    """Derive conservative triage flags without declaring a concrete cause."""
+    findings: list[dict[str, str]] = []
+    load = dict(report.get("load", {}))
+    cpu = dict(report.get("cpu", {}))
+    memory = dict(report.get("memory", {}))
+    disk = dict(report.get("disk", {}))
+    processes = dict(report.get("processes", {}))
+    thermal = dict(report.get("thermal", {}))
+
+    load_per_cpu = float(load.get("one_minute_per_cpu") or 0)
+    if load_per_cpu >= 2:
+        findings.append(
+            _finding(
+                "critical",
+                "load",
+                "运行队列远高于 CPU 数量",
+                f"1 分钟 load/逻辑核 = {load_per_cpu:.2f}",
+            )
+        )
+    elif load_per_cpu >= 1:
+        findings.append(
+            _finding(
+                "warning",
+                "load",
+                "运行队列已达到 CPU 数量",
+                f"1 分钟 load/逻辑核 = {load_per_cpu:.2f}",
+            )
+        )
+
+    if int(cpu.get("sample_count") or 0) > 0:
+        idle = float(cpu.get("idle_avg_pct") or 0)
+        system = float(cpu.get("system_avg_pct") or 0)
+        if idle < 10:
+            findings.append(_finding("critical", "cpu", "CPU 几乎没有空闲", f"平均 idle = {idle:.1f}%"))
+        elif idle < 25:
+            findings.append(_finding("warning", "cpu", "CPU 空闲余量偏低", f"平均 idle = {idle:.1f}%"))
+        if system >= 40:
+            findings.append(
+                _finding("warning", "cpu_system", "系统态 CPU 偏高", f"平均 system = {system:.1f}%")
+            )
+
+    physical = int(memory.get("physical_bytes") or 0)
+    compressor = int(memory.get("compressor_bytes") or 0)
+    if physical and compressor / physical >= 0.35:
+        findings.append(
+            _finding(
+                "warning",
+                "memory",
+                "压缩内存占比较高",
+                f"compressor/physical = {compressor / physical:.1%}",
+            )
+        )
+    swap_total = int(memory.get("swap_total_bytes") or 0)
+    swap_used = int(memory.get("swap_used_bytes") or 0)
+    if swap_total and swap_used / swap_total >= 0.8:
+        findings.append(
+            _finding(
+                "warning",
+                "memory",
+                "Swap 占用接近上限",
+                f"swap used = {swap_used / swap_total:.1%}",
+            )
+        )
+    pressure_free = memory.get("memory_pressure_free_pct")
+    if pressure_free is not None and float(pressure_free) <= 10:
+        findings.append(
+            _finding("critical", "memory", "当前内存压力很高", f"memory_pressure free = {pressure_free}%")
+        )
+    elif pressure_free is not None and float(pressure_free) <= 25:
+        findings.append(
+            _finding("warning", "memory", "当前内存余量偏低", f"memory_pressure free = {pressure_free}%")
+        )
+    swapout_rate = float(memory.get("swapouts_mib_per_second") or 0)
+    if swapout_rate >= 10:
+        findings.append(
+            _finding("critical", "memory_activity", "正在发生大量换出", f"swapout = {swapout_rate:.1f} MiB/s")
+        )
+    elif swapout_rate >= 1:
+        findings.append(
+            _finding("warning", "memory_activity", "检测到持续换出", f"swapout = {swapout_rate:.1f} MiB/s")
+        )
+
+    disk_used = disk.get("used_pct")
+    if disk_used is not None and float(disk_used) >= 90:
+        findings.append(_finding("critical", "disk_capacity", "磁盘可用空间不足", f"used = {float(disk_used):.1f}%"))
+    elif disk_used is not None and float(disk_used) >= 80:
+        findings.append(_finding("warning", "disk_capacity", "磁盘使用率偏高", f"used = {float(disk_used):.1f}%"))
+    smart = str(disk.get("smart_status") or "")
+    if smart and smart.lower() != "verified":
+        findings.append(_finding("critical", "disk_health", "磁盘健康状态异常", f"SMART = {smart}"))
+    tps = float(disk.get("avg_tps") or 0)
+    kb_per_transfer = float(disk.get("avg_kb_per_transfer") or 0)
+    if tps >= 5000 and 0 < kb_per_transfer < 16:
+        findings.append(
+            _finding(
+                "warning",
+                "disk_activity",
+                "磁盘存在持续大量小块 I/O",
+                f"{tps:.0f} tps, {kb_per_transfer:.1f} KiB/transfer",
+            )
+        )
+
+    for row in list(processes.get("top_io", [])):
+        read_rate = float(row.get("read_mib_per_second") or 0)
+        write_rate = float(row.get("write_mib_per_second") or 0)
+        peak = max(read_rate, write_rate)
+        if peak < 25:
+            continue
+        severity = "critical" if peak >= 50 else "warning"
+        findings.append(
+            _finding(
+                severity,
+                "process_io",
+                f"进程 {row.get('executable', 'unknown')} 持续高 I/O",
+                f"PID {row.get('pid')}: read {read_rate:.1f} MiB/s, write {write_rate:.1f} MiB/s",
+            )
+        )
+
+    process_count = int(processes.get("process_count") or 0)
+    thread_count = int(processes.get("thread_count") or 0)
+    if process_count >= 800 or thread_count >= 10000:
+        findings.append(
+            _finding(
+                "warning",
+                "process_scale",
+                "进程或线程数量偏高",
+                f"processes = {process_count}, threads = {thread_count}",
+            )
+        )
+    if thermal.get("warning") is True:
+        findings.append(_finding("critical", "thermal", "检测到温控或性能限制", "pmset therm reported a warning"))
+
+    shell = report.get("shell")
+    if isinstance(shell, dict) and shell.get("median_seconds") is not None:
+        median = float(shell["median_seconds"])
+        if median >= 1:
+            findings.append(_finding("critical", "shell", "登录 shell 启动明显偏慢", f"median = {median:.2f}s"))
+        elif median >= 0.5:
+            findings.append(_finding("warning", "shell", "登录 shell 启动略慢", f"median = {median:.2f}s"))
+
+    return sorted(findings, key=lambda item: _SEVERITY_ORDER[item["severity"]])
+
+
+def _with_findings(report: dict[str, object]) -> dict[str, object]:
+    payload = dict(report)
+    payload["findings"] = derive_findings(report)
+    return payload
+
+
+def render_json(report: dict[str, object]) -> str:
+    return json.dumps(_with_findings(report), ensure_ascii=False, indent=2)
+
+
+def _format_bytes(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(number) < 1024 or unit == "TiB":
+            return f"{number:.1f} {unit}"
+        number /= 1024
+    return "n/a"
+
+
+def render_markdown(report: dict[str, object]) -> str:
+    payload = _with_findings(report)
+    metadata = dict(payload.get("metadata", {}))
+    load = dict(payload.get("load", {}))
+    cpu = dict(payload.get("cpu", {}))
+    memory = dict(payload.get("memory", {}))
+    disk = dict(payload.get("disk", {}))
+    processes = dict(payload.get("processes", {}))
+    thermal = dict(payload.get("thermal", {}))
+    lines = [
+        "# macOS Performance Snapshot",
+        "",
+        f"- Time: {metadata.get('timestamp', 'n/a')}",
+        f"- Model: {metadata.get('model', 'n/a')} / {metadata.get('logical_cpus', 'n/a')} logical CPUs",
+        f"- Sampling window: {metadata.get('sampling_duration_seconds', 'n/a')}s",
+        "",
+        "## Findings",
+        "",
+    ]
+    findings = list(payload.get("findings", []))
+    if findings:
+        for item in findings:
+            lines.append(
+                f"- [{str(item['severity']).upper()}][{item['confidence']}] "
+                f"{item['summary']} — {item['evidence']}"
+            )
+    else:
+        lines.append("- No advisory threshold was crossed in this sampling window.")
+
+    lines.extend(
+        [
+            "",
+            "## Metrics",
+            "",
+            f"- Load (1/5/15m): {load.get('one_minute', 'n/a')} / {load.get('five_minutes', 'n/a')} / {load.get('fifteen_minutes', 'n/a')}",
+            f"- CPU avg user/system/idle: {cpu.get('user_avg_pct', 'n/a')}% / {cpu.get('system_avg_pct', 'n/a')}% / {cpu.get('idle_avg_pct', 'n/a')}%",
+            f"- Memory used/compressor/free: {_format_bytes(memory.get('used_bytes'))} / {_format_bytes(memory.get('compressor_bytes'))} / {_format_bytes(memory.get('unused_bytes'))}",
+            f"- Swap used/total: {_format_bytes(memory.get('swap_used_bytes'))} / {_format_bytes(memory.get('swap_total_bytes'))}",
+            f"- Disk used: {disk.get('used_pct', 'n/a')}%; SMART: {disk.get('smart_status', 'unavailable')}",
+            f"- Disk avg: {disk.get('avg_mib_per_second', 'n/a')} MiB/s, {disk.get('avg_tps', 'n/a')} tps, {disk.get('avg_kb_per_transfer', 'n/a')} KiB/transfer",
+            f"- Processes/running/stuck/threads: {processes.get('process_count', 'n/a')} / {processes.get('running_count', 'n/a')} / {processes.get('stuck_count', 'n/a')} / {processes.get('thread_count', 'n/a')}",
+            f"- Thermal warning: {thermal.get('warning', 'unavailable')}",
+        ]
+    )
+
+    top_cpu = list(processes.get("top_cpu", []))[:5]
+    if top_cpu:
+        lines.extend(["", "## Top CPU Processes", "", "| PID | Executable | CPU | RSS |", "|---:|---|---:|---:|"])
+        for row in top_cpu:
+            lines.append(
+                f"| {row.get('pid')} | {row.get('executable')} | {float(row.get('cpu_pct') or 0):.1f}% | {_format_bytes(row.get('rss_bytes'))} |"
+            )
+    top_io = list(processes.get("top_io", []))[:10]
+    if top_io:
+        lines.extend(["", "## Per-process I/O", ""])
+        for row in top_io:
+            lines.append(
+                f"- PID {row.get('pid')} {row.get('executable')}: read {float(row.get('read_mib_per_second') or 0):.1f} MiB/s, write {float(row.get('write_mib_per_second') or 0):.1f} MiB/s"
+            )
+
+    shell = payload.get("shell")
+    if isinstance(shell, dict):
+        lines.extend(
+            [
+                "",
+                "## Shell startup",
+                "",
+                f"- Clean zsh: {shell.get('clean_seconds', 'n/a')}s",
+                f"- Login zsh median/P90: {shell.get('median_seconds', 'n/a')}s / {shell.get('p90_seconds', 'n/a')}s",
+            ]
+        )
+
+    lines.extend(["", "## Limitations", ""])
+    limitations = list(payload.get("limitations", []))
+    if limitations:
+        lines.extend(f"- {item}" for item in limitations)
+    else:
+        lines.append("- None reported.")
+    return "\n".join(lines)
+
+
+def parse_duration(value: str) -> int:
+    try:
+        duration = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("duration must be an integer") from exc
+    if duration < 3 or duration > 30:
+        raise argparse.ArgumentTypeError("duration must be between 3 and 30 seconds")
+    return duration
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Collect read-only macOS performance evidence")
+    parser.add_argument("--duration", type=parse_duration, default=10, help="sampling seconds, from 3 to 30")
+    parser.add_argument("--format", choices=("markdown", "json"), default="markdown", help="output format")
+    parser.add_argument(
+        "--include-shell",
+        action="store_true",
+        help="also time one clean and five real login zsh startups",
+    )
+    return parser
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    collector: Callable[..., dict[str, object]] = collect_report,
+    platform_name: str | None = None,
+    stdout=None,
+    stderr=None,
+) -> int:
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    system_name = platform_name or platform.system()
+    if system_name != "Darwin":
+        stderr.write("This collector supports macOS only.\n")
+        return 2
+    args = build_parser().parse_args(argv)
+    try:
+        report = collector(
+            duration=args.duration,
+            include_shell=args.include_shell,
+            platform_name=system_name,
+        )
+        rendered = render_json(report) if args.format == "json" else render_markdown(report)
+        stdout.write(rendered + "\n")
+    except BrokenPipeError:
+        return 0
+    except UnsupportedPlatformError as exc:
+        stderr.write(f"{exc}\n")
+        return 2
+    except (OSError, RuntimeError, ValueError) as exc:
+        stderr.write(f"collection failed: {exc}\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
