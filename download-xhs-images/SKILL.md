@@ -1,11 +1,13 @@
 ---
 name: download-xhs-images
-description: Use when a user wants to抓取、下载、保存或批量导出一个或多个小红书（Xiaohongshu/RED）图文帖子的全部图片，尤其是要求按帖子 ID 分目录、转换为 JPG/JPEG 或不保留 WebP 时。
+description: Use whenever a user asks to scrape, download, save, or batch-export every image from one or more public Xiaohongshu (RED) image posts, including Chinese requests such as 抓取、下载或保存小红书图片, especially when images should be grouped by post ID, converted to JPG/JPEG, or exported without WebP files.
 ---
 
 # Download Xiaohongshu Images
 
 批量获取公开小红书图文帖子中的图片。优先运行确定性脚本；仅在公开页面受登录墙或结构变化影响时使用浏览器兜底。
+
+需要 Python 3.8+ 和网络访问。JPEG 转换与完整校验还需要 macOS 自带的 `sips` 或 Pillow。
 
 ## 快速执行
 
@@ -15,7 +17,7 @@ python3 <skill-dir>/scripts/download_xhs_images.py \
   --output-dir xhs-images
 ```
 
-脚本按帖子 ID 去重并输出 `xhs-images/<post-id>/01.jpg`。默认 JPG 质量为 92；已有 JPG 会跳过，需要覆盖时加 `--force`。运行 `--help` 查看全部参数。
+脚本只访问 HTTPS 小红书页面及受信任的图片 CDN，按帖子 ID 去重并输出 `xhs-images/<post-id>/01.jpg`。默认 JPG 质量为 92，单张图片上限为 64 MiB；已有且通过完整校验的 JPG 会跳过，损坏文件会重新下载，需要覆盖有效文件时加 `--force`。新文件完成转换和校验后才会原子替换旧文件。运行 `--help` 查看超时、大小上限等参数。
 
 ## 工作流
 
