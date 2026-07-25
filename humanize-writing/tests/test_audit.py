@@ -536,9 +536,10 @@ class PackageContractTests(unittest.TestCase):
             "references/voice-and-fidelity.md",
         ):
             with self.subTest(relative_path=relative_path):
+                escaped_relative_path = relative_path.replace(".", r"\.")
                 self.assertRegex(
                     skill_text,
-                    rf"\[[^\]]+\]\({relative_path.replace('.', r'\.') }\)",
+                    rf"\[[^\]]+\]\({escaped_relative_path}\)",
                 )
 
     def test_runtime_contract_preserves_fidelity_without_detector_promises(self):

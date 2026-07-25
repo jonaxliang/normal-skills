@@ -47,7 +47,7 @@ codesign --verify --strict --verbose=4 '/path/to/Suspect.app'
 
 ## 安全与隐私门禁
 
-- 默认禁止 `sudo`、`kill/pkill`、重启、`purge`、删缓存/Swap、`defaults write`、修改 `launchctl`、停止索引/备份、停用 Defender/CorpLink 或改显示器/电源设置。
+- 默认禁止 `sudo`、`kill/pkill`、重启、`purge`、删缓存/Swap、`defaults write`、修改 `launchctl`、停止索引/备份、停用防病毒或终端安全软件，或改显示器/电源设置。
 - 不运行 `env`，不采集浏览器状态，不使用完整 `command`/args；只使用 `comm`。展示路径时把 HOME 替换为 `~`。
 - `fs_usage`、`powermetrics`、全卷校验等提权或重探针不默认运行。
 - 任何会改变进程状态的 A/B 测试都先取得用户明确授权，并说明会暂时失去的功能。
