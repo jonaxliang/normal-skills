@@ -1,0 +1,7 @@
+interface:
+  display_name: "找回已删除的 QQ 空间说说"
+  short_description: "扫码从历史痕迹中找回被删说说的正文和图片线索"
+  default_prompt: "使用 $qzone-post-recovery 帮我找回自己删掉的 QQ 空间说说；先验证当前列表是否完整，再把找回内容、待确认线索和发布事件分开保存。"
+
+policy:
+  allow_implicit_invocation: true

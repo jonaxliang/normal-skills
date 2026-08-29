@@ -16,4 +16,5 @@ dist/
 xhs-images/
 douyin-videos/
 .worktrees/
+.gstack/
 humanize-writing-workspace/
